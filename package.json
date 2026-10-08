@@ -1,0 +1,13 @@
+{
+  "name": "panel-inmobiliario-v18-railway",
+  "version": "18.0.0",
+  "private": true,
+  "description": "Panel inmobiliario v18 - despliegue Railway sin modificar el frontend",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check app.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
