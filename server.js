@@ -10,26 +10,19 @@ const hash=p=>new Promise((resolve,reject)=>crypto.scrypt(p,Buffer.from('realest
 const random=()=>crypto.randomBytes(32).toString('hex');
 const sha=s=>crypto.createHash('sha256').update(s).digest('hex');
 const emailOK=s=>/^\S+@\S+\.\S+$/.test(s||'');
-const resendConfigured=()=>Boolean(process.env.RESEND_API_KEY&&process.env.RESEND_FROM);
 const brevoConfigured=()=>Boolean(process.env.BREVO_API_KEY&&process.env.BREVO_FROM);
-const emailConfigured=()=>brevoConfigured()||resendConfigured();
 async function sendVerificationEmail(to,code){
-  if(brevoConfigured()){
-    const response=await fetch('https://api.brevo.com/v3/smtp/email',{
-      method:'POST',headers:{'api-key':process.env.BREVO_API_KEY,'Content-Type':'application/json','accept':'application/json'},
-      body:JSON.stringify({sender:{email:process.env.BREVO_FROM,name:process.env.BREVO_FROM_NAME||'Gestión Inmobiliaria'},to:[{email:to}],subject:'Verificá tu cuenta inmobiliaria',textContent:`Tu código de verificación es ${code}. Vence en 10 minutos.`}),
-      signal:AbortSignal.timeout(15000)
-    });
-    if(!response.ok){const details=await response.text();console.error('Brevo email delivery failed:',response.status,details.slice(0,1000));throw new Error('No se pudo enviar el código. Revisá la clave API y el remitente autorizado en Brevo.');}
-    return;
-  }
-
-  const response=await fetch('https://api.resend.com/emails',{
+  const sender=process.env.BREVO_FROM.trim();
+  const response=await fetch('https://api.brevo.com/v3/smtp/email',{
     method:'POST',
-    headers:{'Authorization':`Bearer ${process.env.RESEND_API_KEY}`,'Content-Type':'application/json'},
-    body:JSON.stringify({from:process.env.RESEND_FROM,to:[to],subject:'Verificá tu cuenta inmobiliaria',text:`Tu código de verificación es ${code}. Vence en 10 minutos.`})
+    headers:{'accept':'application/json','api-key':process.env.BREVO_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({sender:{email:sender},to:[{email:to}],subject:'Verificá tu cuenta inmobiliaria',textContent:`Tu código de verificación es ${code}. Vence en 10 minutos.`})
   });
-  if(!response.ok){const details=await response.text();console.error('Resend email delivery failed:',response.status,details.slice(0,1000));throw new Error('No se pudo enviar el código de verificación. Revisá Resend y sus variables.');}
+  if(!response.ok){
+    const details=await response.text();
+    console.error('Brevo email delivery failed:',response.status,details.slice(0,1000));
+    throw new Error('Brevo rechazó el envío del código de verificación. Revisá el remitente autorizado y los logs de Railway.');
+  }
 }
 
 const schema=`CREATE TABLE IF NOT EXISTS organizations(id uuid PRIMARY KEY, name text NOT NULL, data jsonb NOT NULL DEFAULT '{}'::jsonb, revision bigint NOT NULL DEFAULT 0);
@@ -45,7 +38,7 @@ const setCookie=(res,token)=>res.set('Set-Cookie',`sid=${token}; HttpOnly; Secur
 const clearCookie=res=>res.set('Set-Cookie','sid=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
 const attempts=new Map();function limit(req,res,next){const key=req.ip+':'+req.path;const now=Date.now(),a=attempts.get(key)||{n:0,t:now};if(now-a.t>15*60e3){a.n=0;a.t=now;}if(++a.n>30)return res.status(429).json({error:'Demasiados intentos. Probá más tarde.'});attempts.set(key,a);next();}
 app.use('/api/auth',limit);
-app.post('/api/auth/register',wrap(async(req,res)=>{if(!emailConfigured())return res.status(503).json({error:'Configurá BREVO_API_KEY y BREVO_FROM, o RESEND_API_KEY y RESEND_FROM, en Railway.'});const {organization,name,email,password}=req.body||{};if(!organization?.trim()||!name?.trim()||!emailOK(email)||typeof password!=='string'||password.length<12||password.length>128)return res.status(400).json({error:'Completá los datos. La contraseña debe tener entre 12 y 128 caracteres.'});const client=await pool.connect();try{await client.query('BEGIN');const org=crypto.randomUUID(),user=crypto.randomUUID(),code=String(crypto.randomInt(100000,1000000));await client.query('INSERT INTO organizations(id,name) VALUES($1,$2)',[org,organization.trim().slice(0,120)]);await client.query('INSERT INTO users(id,org_id,name,email,password_hash) VALUES($1,$2,$3,$4,$5)',[user,org,name.trim().slice(0,120),email.trim().toLowerCase(),await hash(password)]);await client.query(`INSERT INTO verifications(user_id,code_hash,expires_at) VALUES($1,$2,now()+interval '10 minutes')`,[user,sha(code)]);await sendVerificationEmail(email.trim().toLowerCase(),code);await client.query('COMMIT');res.status(201).json({message:'Enviamos un código a tu correo.'});}catch(e){await client.query('ROLLBACK');if(e.code==='23505')return res.status(409).json({error:'El correo ya está registrado.'});throw e;}finally{client.release();}}));
+app.post('/api/auth/register',wrap(async(req,res)=>{if(!brevoConfigured())return res.status(503).json({error:'Falta configurar BREVO_API_KEY y BREVO_FROM para enviar códigos de verificación.'});const {organization,name,email,password}=req.body||{};if(!organization?.trim()||!name?.trim()||!emailOK(email)||typeof password!=='string'||password.length<12||password.length>128)return res.status(400).json({error:'Completá los datos. La contraseña debe tener entre 12 y 128 caracteres.'});const client=await pool.connect();try{await client.query('BEGIN');const org=crypto.randomUUID(),user=crypto.randomUUID(),code=String(crypto.randomInt(100000,1000000));await client.query('INSERT INTO organizations(id,name) VALUES($1,$2)',[org,organization.trim().slice(0,120)]);await client.query('INSERT INTO users(id,org_id,name,email,password_hash) VALUES($1,$2,$3,$4,$5)',[user,org,name.trim().slice(0,120),email.trim().toLowerCase(),await hash(password)]);await client.query(`INSERT INTO verifications(user_id,code_hash,expires_at) VALUES($1,$2,now()+interval '10 minutes')`,[user,sha(code)]);await sendVerificationEmail(email.trim().toLowerCase(),code);await client.query('COMMIT');res.status(201).json({message:'Enviamos un código a tu correo.'});}catch(e){await client.query('ROLLBACK');if(e.code==='23505')return res.status(409).json({error:'El correo ya está registrado.'});throw e;}finally{client.release();}}));
 app.post('/api/auth/verify',wrap(async(req,res)=>{const {email,code}=req.body||{};if(!emailOK(email)||!/^[0-9]{6}$/.test(code||''))return res.status(400).json({error:'Datos inválidos.'});const r=await pool.query(`UPDATE users SET verified=true WHERE id=(SELECT u.id FROM users u JOIN verifications v ON v.user_id=u.id WHERE u.email=$1 AND v.code_hash=$2 AND v.expires_at>now() AND v.attempts<5) RETURNING id`,[email.toLowerCase(),sha(code)]);if(!r.rowCount){await pool.query(`UPDATE verifications SET attempts=attempts+1 FROM users u WHERE u.id=verifications.user_id AND u.email=$1`,[email.toLowerCase()]);return res.status(400).json({error:'Código incorrecto o vencido.'});}await pool.query('DELETE FROM verifications WHERE user_id=$1',[r.rows[0].id]);res.json({message:'Cuenta verificada. Ya podés ingresar.'});}));
 app.post('/api/auth/login',wrap(async(req,res)=>{const {email,password}=req.body||{};if(typeof password!=='string'||!emailOK(email))return res.status(401).json({error:'Credenciales inválidas.'});const r=await pool.query('SELECT id,password_hash,verified FROM users WHERE email=$1',[email.toLowerCase()]);const expected=r.rows[0]?.password_hash||await hash('invalid-placeholder');const actual=await hash(password);if(!r.rowCount||!crypto.timingSafeEqual(Buffer.from(expected,'hex'),Buffer.from(actual,'hex')))return res.status(401).json({error:'Credenciales inválidas.'});if(!r.rows[0].verified)return res.status(403).json({error:'Verificá tu correo antes de ingresar.'});const token=random();await pool.query(`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '7 days')`,[sha(token),r.rows[0].id]);setCookie(res,token);res.json({ok:true});}));
 app.post('/api/auth/logout',auth,wrap(async(req,res)=>{await pool.query('DELETE FROM sessions WHERE token_hash=$1',[sha(req.token)]);clearCookie(res);res.json({ok:true});}));
