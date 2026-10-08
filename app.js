@@ -41,8 +41,11 @@
     {key:'fondosObras',label:'Fondos especiales para obras importantes'}
   ];
   function expenseLabel(group,key){ const list=group==='ordinary'?EXPENSES_ORDINARY:EXPENSES_EXTRAORDINARY; return list.find(x=>x.key===key)?.label||key; }
-  let state = loadState();
-  let session = loadSession();
+  let state = defaultState();
+  let remoteRevision = 0;
+  let saveQueue = Promise.resolve();
+  let bootReady = false;
+  let session = null;
   let view = 'properties';
   let inactivityTimer = null;
   let currentReceiptId = null;
@@ -108,43 +111,36 @@
   function defaultState(){
     return {version:5,accounts:[],currentAccount:null,properties:[],payments:[],receipts:[],contracts:[],trash:[],audit:[],backups:[],settings:{commissionPercent:5,sessionMinutes:30,rentIndices:{icl:[{date:'2026-09-01',value:31.69}],ipc:[],casapropia:[],cer:[],uva:[]}}};
   }
-  function loadState(){
-    try {
-      const raw=localStorage.getItem(APP);
-      const parsed=raw?JSON.parse(raw):{};
-      const s={...defaultState(),...parsed};
-      s.properties=Array.isArray(s.properties)?s.properties:[];
-      s.payments=Array.isArray(s.payments)?s.payments:[];
-      s.receipts=Array.isArray(s.receipts)?s.receipts:[];
-      s.contracts=Array.isArray(s.contracts)?s.contracts:[];
-      s.trash=Array.isArray(s.trash)?s.trash:[];
-      s.audit=Array.isArray(s.audit)?s.audit:[];
-      s.backups=Array.isArray(s.backups)?s.backups:[];
-      s.settings={...defaultState().settings,...(s.settings||{})};
-      return s;
-    } catch(e) { return defaultState(); }
+  function loadState(){ return defaultState(); }
+  async function api(url,opts={}){
+    const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json'},...opts});
+    const body=await r.json().catch(()=>({}));
+    if(!r.ok)throw Object.assign(new Error(body.error||'Error de conexión'),{status:r.status});
+    return body;
+  }
+  async function fetchRemote(){
+    const [me,remote]=await Promise.all([api('/api/me'),api('/api/state')]);
+    const account={id:me.user.id,inmobiliaria:me.user.organization,userName:me.user.name,email:me.user.email};
+    state={...defaultState(),...remote.data,accounts:[account],currentAccount:account.id};
+    remoteRevision=remote.revision;
+    session={accountId:account.id,createdAt:Date.now(),lastActivity:Date.now()};
   }
   function saveState(){
-    try {
-      // El contenido de los archivos de contrato (base64) nunca va a localStorage:
-      // se guarda aparte en IndexedDB (ver idbSetFile) y acá sólo persiste su metadata.
-      const persistable={
-        ...state,
-        contracts: state.contracts.map(contractWithoutFile),
-        trash: state.trash.map(t=>Array.isArray(t?.linkedContracts)?{...t,linkedContracts:t.linkedContracts.map(contractWithoutFile)}:t)
-      };
-      localStorage.setItem(APP,JSON.stringify(persistable));
-    } catch(e){
-      console.error(e);
-      try{ recordAudit('SYSTEM_ERROR','No se pudieron guardar los datos: '+(e.message||e),'error',false); }catch(_){}
-      try{ toast('No se pudieron guardar los cambios (almacenamiento lleno).'); }catch(_){}
-    }
+    if(!bootReady||!session)return;
+    const data={...state,accounts:[],currentAccount:null,
+      contracts:state.contracts.map(contractWithoutFile),
+      trash:state.trash.map(t=>Array.isArray(t?.linkedContracts)?{...t,linkedContracts:t.linkedContracts.map(contractWithoutFile)}:t)};
+    saveQueue=saveQueue.then(async()=>{
+      const result=await api('/api/state',{method:'PUT',body:JSON.stringify({data,revision:remoteRevision})});
+      remoteRevision=result.revision;
+    }).catch(async e=>{
+      console.error('Error de sincronización:',e);
+      if(e.status===409){bootReady=false;alert('Otro dispositivo modificó los datos. Se recargará la información para evitar sobrescribir cambios.');location.reload();}
+      else toast('No se pudo sincronizar con el servidor. Revisá tu conexión.');
+    });
   }
-  function loadSession(){
-    try { const s=JSON.parse(sessionStorage.getItem(APP+'_session')||'null'); return s&&s.accountId?s:null; }
-    catch(e){ return null; }
-  }
-  function saveSession(){ if(session) sessionStorage.setItem(APP+'_session',JSON.stringify(session)); else sessionStorage.removeItem(APP+'_session'); }
+  function loadSession(){return null;}
+  function saveSession(){}
   function currentAccount(){ return state.accounts.find(a=>a.id===session?.accountId)||null; }
   function accountId(){ return currentAccount()?.id||null; }
   function accountProperties(){ return state.properties.filter(p=>p.accountId===accountId()); }
@@ -210,7 +206,7 @@
       <div class="form-group"><label>Repetir contraseña *</label><input id="regPass2" type="password"></div>
       <button class="btn btn-primary" style="width:100%" onclick="window.register()">Crear cuenta</button>
       <div class="login-hint">¿Ya tenés cuenta? <button class="login-switch" onclick="window.showLogin()">Ingresar</button></div>`:
-      `<div class="form-group"><label>Inmobiliaria / Email</label><input id="loginId" placeholder="Nombre de inmobiliaria o email"></div>
+      `<div class="form-group"><label>Email</label><input id="loginId" type="email" placeholder="correo@ejemplo.com"></div>
       <div class="form-group"><label>Contraseña</label><input id="loginPass" type="password" onkeydown="if(event.key==='Enter')window.login()"></div>
       <button class="btn btn-primary" style="width:100%" onclick="window.login()">Ingresar</button>
       <div class="login-hint">¿Primera vez? <button class="login-switch" onclick="window.showRegister()">Crear cuenta de inmobiliaria</button></div>`}
@@ -220,21 +216,22 @@
   window.passMeter=()=>{const p=$('#regPass')?.value||'',m=$('#meter');if(!m)return;const score=(p.length>=8)+(p.length>=12)+(/[A-Z]/.test(p))+(/[0-9]/.test(p))+(/[^\w]/.test(p));m.style.width=score*20+'%';m.style.background=score>=4?'var(--olive)':score>=2?'#B77B20':'var(--danger)';};
   window.register=async()=>{
     const inmo=$('#regInmo').value.trim(),name=$('#regName').value.trim(),email=$('#regEmail').value.trim().toLowerCase(),p=$('#regPass').value,p2=$('#regPass2').value,err=$('#loginError');
-    if(!inmo||!name||!email||!p){err.textContent='Completá todos los campos obligatorios.';err.classList.add('show');return;}
-    if(!/^\S+@\S+\.\S+$/.test(email)){err.textContent='Ingresá un email válido.';err.classList.add('show');return;}
-    if(p.length<8){err.textContent='La contraseña debe tener al menos 8 caracteres.';err.classList.add('show');return;}
+    if(!inmo||!name||!email||!p){err.textContent='Completá todos los campos.';err.classList.add('show');return;}
+    if(p.length<12){err.textContent='La contraseña debe tener al menos 12 caracteres.';err.classList.add('show');return;}
     if(p!==p2){err.textContent='Las contraseñas no coinciden.';err.classList.add('show');return;}
-    if(state.accounts.some(a=>a.email===email)){err.textContent='Ya existe una cuenta con ese email.';err.classList.add('show');return;}
-    const salt=uid('salt'),hash=await hashPass(p,salt),account={id:uid('acc'),inmobiliaria:inmo,userName:name,email,salt,hash,createdAt:new Date().toISOString()};
-    state.accounts.push(account);state.currentAccount=account.id;saveState();session={accountId:account.id,createdAt:Date.now(),lastActivity:Date.now()};saveSession();recordAudit('REGISTER','Cuenta creada para '+inmo);render();
+    try{await api('/api/auth/register',{method:'POST',body:JSON.stringify({organization:inmo,name,email,password:p})});window.showVerification(email);}
+    catch(e){err.textContent=e.message;err.classList.add('show');}
   };
+  window.showVerification=email=>{
+    $('#app').innerHTML=`<div class="login-screen"><div class="login-card"><h1>Verificá tu correo</h1><p>Ingresá el código de seis dígitos enviado a ${esc(email)}. Vence en 10 minutos.</p><div id="loginError" class="login-error"></div><div class="form-group"><label>Código de verificación</label><input id="verifyCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></div><button class="btn btn-primary" style="width:100%" onclick="window.verifyAccount('${esc(email)}')">Verificar cuenta</button><div class="login-hint"><button class="login-switch" onclick="window.showLogin()">Volver a ingresar</button></div></div></div>`;
+  };
+  window.verifyAccount=async email=>{try{await api('/api/auth/verify',{method:'POST',body:JSON.stringify({email,code:$('#verifyCode').value.trim()})});alert('Correo verificado. Ya podés iniciar sesión.');renderLogin(false);}catch(e){const el=$('#loginError');el.textContent=e.message;el.classList.add('show');}};
   window.login=async()=>{
-    const id=$('#loginId').value.trim().toLowerCase(),p=$('#loginPass').value,err=$('#loginError'),a=state.accounts.find(x=>x.email===id||String(x.inmobiliaria||'').toLowerCase()===id);
-    if(!a){err.textContent='Cuenta no encontrada.';err.classList.add('show');return;}
-    const h=await hashPass(p,a.salt);if(h!==a.hash){err.textContent='Contraseña incorrecta.';err.classList.add('show');return;}
-    session={accountId:a.id,createdAt:Date.now(),lastActivity:Date.now()};saveSession();view='properties';recordAudit('LOGIN','Ingreso correcto: '+a.inmobiliaria);render();
+    const email=$('#loginId').value.trim().toLowerCase(),password=$('#loginPass').value,err=$('#loginError');
+    try{await api('/api/auth/login',{method:'POST',body:JSON.stringify({email,password})});await fetchRemote();bootReady=true;view='properties';render();}
+    catch(e){err.textContent=e.message;err.classList.add('show');}
   };
-  window.logout=()=>{recordAudit('LOGOUT','Cierre de sesión');session=null;saveSession();clearTimeout(inactivityTimer);renderLogin();};
+  window.logout=async()=>{bootReady=false;try{await saveQueue;await api('/api/auth/logout',{method:'POST'});}catch(e){console.error(e);}session=null;state=defaultState();clearTimeout(inactivityTimer);renderLogin(false);};
   function touchSession(){if(!session)return;session.lastActivity=Date.now();saveSession();clearTimeout(inactivityTimer);inactivityTimer=setTimeout(()=>{if(session){recordAudit('SESSION_TIMEOUT','Sesión cerrada por inactividad','warning');session=null;saveSession();renderLogin();}},SESSION_MS);}
   ['click','keydown','mousemove'].forEach(ev=>document.addEventListener(ev,()=>{if(session)touchSession()},{passive:true}));
 
@@ -970,6 +967,5 @@
     state.contracts.forEach(c=>{if(!c.accountId&&state.accounts.length===1){c.accountId=state.accounts[0].id;changed=true;}});
     if(changed)saveState();
   }
-  migrateLegacyPayments();purgeTrash();
-  if(!state.accounts.length)renderLogin(true);else render();
+  (async()=>{try{await fetchRemote();bootReady=true;migrateLegacyPayments();purgeTrash();render();}catch(e){if(e.status!==401)console.error('Sesión no disponible:',e);renderLogin(false);}})();
 })();

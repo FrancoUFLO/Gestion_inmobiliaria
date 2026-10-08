@@ -1,25 +1,18 @@
-# Panel inmobiliario v18 — Railway
+# Panel inmobiliario v19 — PostgreSQL + autenticación
 
-Esta versión conserva **sin cambios** los archivos `index.html`, `styles.css` y `app.js` de la v18. `server.js` usa el servidor HTTP nativo de Node.js, sin dependencias que instalar.
+## Instalación en Railway
 
-## Publicar
+1. Creá un **nuevo servicio de prueba** desde este repositorio (no reemplaces v18 todavía).
+2. Conectá el servicio PostgreSQL y configurá `DATABASE_URL=${{Postgres.DATABASE_URL}}` (ajustá `Postgres` al nombre real).
+3. Configurá el correo saliente con `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` y `MAIL_FROM`. El proveedor debe autorizar el remitente; Railway no ofrece por sí mismo envío SMTP. Sin SMTP, el registro devuelve un error explícito y no se crean cuentas.
+4. Desplegá con `npm start`. Verificá `/api/health` (debe devolver `{"status":"ok"}`).
+5. Probá registro, recepción de código, verificación, inicio de sesión y propiedades en dos dispositivos.
 
-1. Descomprimí este ZIP y subí **los archivos de su interior** a la raíz de un repositorio nuevo de GitHub (no subas solamente el ZIP).
-2. En Railway: **New Project → Deploy from GitHub Repo**, seleccioná el repositorio y desplegá.
-3. Railway detecta `package.json` y ejecuta `npm start` (si pide Start Command, ingresá `npm start`). No se necesitan variables de entorno; Railway proporciona `PORT`.
-4. En el servicio: **Settings → Networking → Public Networking → Generate Domain**. Abrí la URL asignada.
-5. Verificá inicio de sesión, alta de propiedad, pagos, contratos, calendario y exportaciones.
+## Advertencias importantes
 
-## Prueba local
-
-Requiere Node.js 20 o superior:
-
-```bash
-npm start
-```
-
-Abrí http://localhost:3000
-
-## Limitaciones importantes
-
-Los datos de la aplicación siguen almacenándose en el `localStorage` de cada navegador. Railway publica la interfaz, **pero no comparte ni sincroniza datos entre equipos**. No usar con datos reales o sensibles de clientes sin implementar autenticación y almacenamiento seguro en servidor, control de accesos y copias de seguridad centralizadas. Las bibliotecas de Excel, PDF y documentos y las fuentes se cargan desde CDNs externos, por lo que requieren conexión a Internet.
+- Base de datos nueva, sin migración desde v18. Los datos antiguos del navegador no se importan.
+- Sesiones del servidor con cookie `HttpOnly; Secure; SameSite=Lax`; contraseña con `scrypt` y salt de aplicación. **Antes de producción** mejorar a Argon2id con salt individual por usuario y añadir recuperación de contraseña, rotación de sesiones y protección CSRF específica.
+- El frontend v18 usa una sincronización por **documento completo** con revisión optimista. Ante cambios concurrentes no fusiona ediciones: muestra aviso y exige recarga. No es todavía una API por entidad ni colaboración simultánea.
+- Los archivos PDF/Word de contratos siguen guardándose en IndexedDB del dispositivo. **No se sincronizan entre dispositivos**. No cargar contratos reales hasta implementar almacenamiento privado de adjuntos en servidor.
+- El backend guarda metadatos y estado en JSONB por inmobiliaria; los datos son accesibles desde distintos dispositivos mediante el mismo usuario. Para un despliegue comercial es necesario migrar a tablas normalizadas, permisos por usuario, copias de seguridad verificadas y auditoría inmutable.
+- No usar para información sensible de clientes hasta completar una revisión de seguridad, autorización, pruebas de concurrencia y respaldo.
