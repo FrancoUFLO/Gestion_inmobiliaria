@@ -356,3 +356,10 @@ table.admin th.sortable:focus-visible{outline:2px solid var(--olive);outline-off
 .receipt-grand-total{margin-top:14px}
 @media(max-width:900px){.rental-main-calculator .calc-result{grid-template-columns:1fr 1fr}}
 @media(max-width:560px){.rental-main-calculator .calc-result{grid-template-columns:1fr}}
+
+/* Alquileres: 12 botones visibles sin deslizador */
+.rent-month-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:7px;margin-top:8px}
+.rent-month-button{min-width:0;padding:12px 0;border:1px solid var(--border,#d5dbe5);border-radius:9px;background:transparent;color:inherit;font:inherit;font-weight:650;cursor:pointer}
+.rent-month-button.active{background:#1f4c86;color:white;border-color:#1f4c86}
+.rent-month-button:focus-visible{outline:3px solid #78a6ed;outline-offset:2px}
+@media(max-width:680px){.rent-month-grid{grid-template-columns:repeat(6,minmax(0,1fr))}}

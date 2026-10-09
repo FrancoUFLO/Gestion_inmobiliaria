@@ -709,87 +709,62 @@
   window.exportContractDocx=id=>{const c=contractById(id)||{title:$('#cTitle')?.value||'Contrato',contentHtml:$('#contractEditor')?.innerHTML||''};if(!window.htmlDocx){toast('No se pudo cargar el exportador Word.');return;}const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:11pt;line-height:1.5;margin:2cm}table{border-collapse:collapse;width:100%}td{border:1px solid #777;padding:6px}h1,h2,h3{margin-bottom:12pt}</style></head><body>${c.contentHtml||'<p></p>'}</body></html>`;const blob=htmlDocx.asBlob(html);const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${safeName(c.title||'contrato')}.docx`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);recordAudit('CONTRACT_EXPORT_DOCX',`Exportado contrato ${c.title||'sin título'} a Word.`);};
   window.deleteContract=id=>{const c=contractById(id);if(!c)return;if(!confirm(`Eliminar el contrato "${c.title}"?`))return;snapshot('Backup previo a eliminación de contrato');state.contracts=state.contracts.filter(x=>x.id!==id);if(c.fileName)idbDeleteFile(id);activeContractId=null;recordAudit('CONTRACT_DELETE',`Eliminado contrato ${c.title}`,'warning');saveState();renderPanel();toast('Contrato eliminado.');};
 
-  // Índices oficiales más usados para actualizar alquileres en Argentina (BCRA/INDEC).
-  // Los valores no se traen en vivo (la app no tiene backend): se cargan y actualizan a mano
-  // en "Valores de índice registrados", y el calculador usa el más cercano a cada fecha pedida.
-  const RENT_INDICES = [
-    {key:'icl',label:'ICL (BCRA)'},
-    {key:'ipc',label:'IPC (INDEC)'},
-    {key:'casapropia',label:'Casa Propia'},
-    {key:'cer',label:'CER (BCRA)'},
-    {key:'uva',label:'UVA (BCRA)'}
+  // Fuente: API oficial de Estadísticas Monetarias v4.0 del BCRA.
+  const RENT_INDICES=[
+    {key:'icl',label:'ICL',pattern:/índice para contratos de locación|indice para contratos de locacion/i},
+    {key:'cer',label:'CER',pattern:/coeficiente de estabilización de referencia|coeficiente de estabilizacion de referencia/i},
+    {key:'uva',label:'UVA',pattern:/unidad de valor adquisitivo/i}
   ];
-  function rentIndexLabel(key){ return RENT_INDICES.find(x=>x.key===key)?.label||key; }
-  function rentIndexSeries(key){
-    if(!state.settings.rentIndices) state.settings.rentIndices={};
-    if(!Array.isArray(state.settings.rentIndices[key])) state.settings.rentIndices[key]=[];
-    return state.settings.rentIndices[key];
-  }
-  // Busca el valor registrado más cercano (y anterior) a una fecha; si no hay ninguno anterior,
-  // usa el más antiguo disponible como aproximación.
-  function closestIndexValue(key,dateStr){
-    const series=rentIndexSeries(key).slice().sort((a,b)=>new Date(a.date)-new Date(b.date));
-    if(!series.length||!dateStr) return null;
-    const target=new Date(dateStr).getTime();
-    let best=null;
-    for(const row of series){ if(new Date(row.date).getTime()<=target) best=row; }
-    return best||series[0];
-  }
-  function rentIndexHistoryHtml(){
-    return RENT_INDICES.map(ix=>{
-      const series=rentIndexSeries(ix.key).slice().sort((a,b)=>new Date(b.date)-new Date(a.date));
-      const rows=series.slice(0,4).map(r=>`<div class="index-history-row"><span>${esc(r.date)}</span><strong>${Number(r.value).toLocaleString('es-AR',{maximumFractionDigits:4})}</strong></div>`).join('')||'<div class="muted index-history-empty">Sin valores cargados todavía.</div>';
-      return `<div class="index-history-group"><div class="index-history-title">${esc(ix.label)}</div>${rows}</div>`;
-    }).join('');
-  }
-  window.saveIndexValue=()=>{
-    const key=$('#idxKeyInput')?.value,date=$('#idxDateInput')?.value,value=Number($('#idxValueInput')?.value);
-    if(!key||!date){toast('Elegí el índice y la fecha.');return;}
-    if(!(value>0)){toast('Ingresá un valor de índice válido.');return;}
-    const series=rentIndexSeries(key);
-    const existing=series.find(r=>r.date===date);
-    if(existing) existing.value=value; else series.push({date,value});
-    saveState();
-    recordAudit('RENT_INDEX_UPDATE',`Valor de índice registrado: ${rentIndexLabel(key)} ${date} = ${value}`);
-    toast('Valor de índice guardado.');
-    renderPanel();
+  function rentIndexLabel(key){return RENT_INDICES.find(x=>x.key===key)?.label||key;}
+  let rentalOfficialData=null;
+  window.selectRentMonths=n=>{
+    document.querySelectorAll('.rent-month-button').forEach(b=>{
+      const active=Number(b.dataset.month)===n;
+      b.classList.toggle('active',active);
+      b.setAttribute('aria-pressed',String(active));
+    });
+    const input=$('#rentPeriodMonths');if(input)input.value=n;
+    window.syncRentPeriod();
   };
-  window.lookupIndexValues=()=>{
-    const key=$('#indexType')?.value, start=$('#indexDateStart')?.value,end=$('#indexDateEnd')?.value;
-    const box=$('#indexResult');
+  window.lookupIndexValues=async()=>{
+    const key=$('#indexType')?.value,start=$('#indexDateStart')?.value,end=$('#indexDateEnd')?.value,box=$('#indexResult');
+    rentalOfficialData=null;
+    if(!box)return;
     if($('#indexStart'))$('#indexStart').value='';
     if($('#indexEnd'))$('#indexEnd').value='';
-    window.rentIndexLookup=null;
-    if(key==='manual'){if(box)box.innerHTML='<div class="notice">Modo manual: ingresá ambos valores y verificá su procedencia antes de usar el resultado.</div>';return;}
-    if(!start||!end||end<=start){if(box)box.innerHTML='<div class="notice warning">Indicá un período válido: la fecha final debe ser posterior a la inicial.</div>';return;}
-    const series=rentIndexSeries(key),vs=series.find(r=>r.date===start),ve=series.find(r=>r.date===end);
-    if(!vs||!ve){if(box)box.innerHTML=`<div class="notice warning">No hay valores registrados para ambas fechas exactas (${esc(start)} y ${esc(end)}). No se aproximan fechas ni se inventan índices. Consultá la fuente oficial y registrá los valores correspondientes.</div>`;return;}
-    $('#indexStart').value=vs.value;$('#indexEnd').value=ve.value;
-    window.rentIndexLookup={key,start,end,initial:vs.value,final:ve.value};
-    if(box)box.innerHTML=`<div class="notice">Valores registrados encontrados para las fechas exactas ${esc(start)} y ${esc(end)}. Verificá su origen antes de liquidar.</div>`;
+    if(!start||!end||end<=start){box.innerHTML='<div class="notice warning">Seleccioná fechas válidas para el período.</div>';return;}
+    box.innerHTML='<div class="notice">Consultando las series oficiales del BCRA…</div>';
+    try{
+      const qs=new URLSearchParams({index:key,start,end});
+      const res=await fetch('/api/rent-indices?'+qs,{credentials:'same-origin'});
+      const data=await res.json();
+      if(!res.ok)throw new Error(data.error||'No se pudo consultar el índice.');
+      if($('#indexType')?.value!==key||$('#indexDateStart')?.value!==start||$('#indexDateEnd')?.value!==end)return;
+      rentalOfficialData=data;
+      $('#indexStart').value=data.initial.value;
+      $('#indexEnd').value=data.final.value;
+      box.innerHTML=`<div class="notice"><strong>Fuente oficial: BCRA.</strong> ${esc(data.description)}. Valores publicados: ${esc(data.initial.date)} y ${esc(data.final.date)}. <a href="${esc(data.source)}" target="_blank" rel="noopener noreferrer">Ver fuente</a>.</div>`;
+    }catch(err){box.innerHTML=`<div class="notice warning">${esc(err.message)} No se mostrará un cálculo sin datos oficiales verificables.</div>`;}
   };
 
   function rentalsView(title){
     const props=accountProperties().filter(p=>p.status==='Alquilado');
-    const indexOptions=RENT_INDICES.map(ix=>`<option value="${ix.key}">${esc(ix.label)}</option>`).join('')+'<option value="manual">Pactado / manual</option>';
-    const idxSelectOptions=RENT_INDICES.map(ix=>`<option value="${ix.key}">${esc(ix.label)}</option>`).join('');
+    const indexOptions=RENT_INDICES.map(ix=>`<option value="${ix.key}">${esc(ix.label)} (BCRA)</option>`).join('');
     const first=props[0];
     return `<div class="admin-head"><h2>${title}</h2><span class="muted">Calculador integrado con contratos y propiedades alquiladas</span></div>
-    <div class="notice"><strong>Cálculo verificable:</strong> seleccioná el contrato, la periodicidad pactada y el índice. Los valores deben corresponder exactamente a las fechas y a la fuente oficial. No se estiman índices faltantes.</div>
-    <section class="panel rental-main-calculator"><div class="panel-head"><div><h3>Actualizar alquiler</h3><span class="muted">La fórmula es: alquiler actual × (índice final ÷ índice inicial).</span></div></div>
+    <div class="notice"><strong>Cálculo verificable:</strong> seleccioná el contrato, la periodicidad pactada y el índice. Los valores se consultan al BCRA. Si falta un dato oficial, no se calcula un importe estimado.</div>
+    <section class="panel rental-main-calculator"><div class="panel-head"><div><h3>Actualizar alquiler</h3><span class="muted">Cálculo basado en series oficiales del BCRA, sin estimar datos faltantes.</span></div></div>
       <div class="grid-3"><div class="form-group"><label>Propiedad / contrato</label><select id="rentProperty" onchange="window.syncRentalProperty()"><option value="">Seleccionar propiedad...</option>${props.map(p=>`<option value="${esc(p.id)}" ${p.id===first?.id?'selected':''}>${esc(p.title)} · ${esc(p.tenant||'Sin inquilino')}</option>`).join('')}</select></div>
       <div class="form-group"><label>Alquiler actual</label><input id="rentBase" type="number" min="0" step="0.01" value="${Number(first?.rent)||0}" oninput="window.calculateIndex(true)"></div>
       <div class="form-group"><label>Índice pactado</label><select id="indexType" onchange="window.lookupIndexValues()">${indexOptions}</select></div></div>
-      <div class="form-row"><div class="form-group"><label>Periodicidad pactada (meses)</label><select id="rentPeriodMonths" onchange="window.syncRentPeriod()">${Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i===5?'selected':''}>${i+1} ${i===0?'mes':'meses'}</option>`).join('')}</select></div><div class="form-group"><label>Inicio / última actualización</label><input id="indexDateStart" type="date" value="${esc(first?.contractStartDate||'')}" onchange="window.syncRentPeriod()"></div><div class="form-group"><label>Fecha del ajuste</label><input id="indexDateEnd" type="date" value="${fmtDateInput()}" onchange="window.lookupIndexValues()"></div></div>
-      <div class="form-row"><div class="form-group"><label>Índice inicial</label><input id="indexStart" type="number" min="0" step="0.000001" placeholder="Se completa automáticamente" oninput="window.calculateIndex(true)"></div><div class="form-group"><label>Índice final</label><input id="indexEnd" type="number" min="0" step="0.000001" placeholder="Se completa automáticamente" oninput="window.calculateIndex(true)"></div></div>
-      <div class="actions index-calc-actions"><button type="button" class="btn" onclick="window.lookupIndexValues()">Buscar valores registrados</button><button type="button" class="btn btn-primary" onclick="window.calculateIndex(false)">Calcular actualización</button></div>
-      <div id="indexResult" class="result-space"></div><p class="muted">Referencia metodológica: <a href="https://chequeado.com/calculadoradealquileres/" target="_blank" rel="noopener noreferrer">Calculadora de alquileres de Chequeado</a>. Desarrollo independiente; no afiliado a Chequeado. Fuentes a verificar: BCRA (ICL), INDEC (IPC), organismos publicadores de RIPTE y Casa Propia, y cotización elegida para dólar. La aplicación no descarga series oficiales automáticamente.</p>
+      <div class="form-group"><label>Periodicidad pactada (meses)</label><input type="hidden" id="rentPeriodMonths" value="6"><div class="rent-month-grid" role="group" aria-label="Periodicidad en meses">${Array.from({length:12},(_,i)=>`<button type="button" class="rent-month-button ${i===5?'active':''}" data-month="${i+1}" aria-pressed="${i===5?'true':'false'}" onclick="window.selectRentMonths(${i+1})">${i+1}</button>`).join('')}</div></div><div class="form-row"><div class="form-group"><label>Inicio / última actualización</label><input id="indexDateStart" type="date" value="${esc(first?.contractStartDate||'')}" onchange="window.syncRentPeriod()"></div><div class="form-group"><label>Fecha del ajuste</label><input id="indexDateEnd" type="date" value="${fmtDateInput()}" onchange="window.lookupIndexValues()"></div></div>
+      <div class="form-row"><div class="form-group"><label>Índice inicial</label><input id="indexStart" type="text" readonly placeholder="Dato oficial del BCRA"></div><div class="form-group"><label>Índice final</label><input id="indexEnd" type="text" readonly placeholder="Dato oficial del BCRA"></div></div>
+      <div class="actions index-calc-actions"><button type="button" class="btn" onclick="window.lookupIndexValues()">Consultar BCRA</button><button type="button" class="btn btn-primary" onclick="window.calculateIndex(false)">Calcular actualización</button></div>
+      <div id="indexResult" class="result-space"></div><p class="muted">Fuente de datos: <a href="https://www.bcra.gob.ar/estadisticas-indicadores/" target="_blank" rel="noopener noreferrer">Banco Central de la República Argentina</a>. Inspiración de estructura y selección de períodos: <a href="https://arquiler.com/" target="_blank" rel="noopener noreferrer">ARquiler</a>. Desarrollo independiente, sin afiliación.</p>
     </section>
-    <div class="grid-2"><section class="panel"><div class="panel-head"><h3>Alternativa por porcentaje</h3></div><div class="form-row"><div class="form-group"><label>Alquiler base</label><input id="rentPctBase" type="number" min="0" step="0.01" value="${Number(first?.rent)||0}"></div><div class="form-group"><label>Variación acordada (%)</label><input id="rentPct" type="number" step="0.01" value="0"></div></div><button class="btn btn-primary" onclick="window.calculatePct()">Calcular porcentaje</button><div id="pctResult" class="result-space"></div></section>
-    <section class="panel"><div class="panel-head"><h3>Próximo ajuste</h3></div><div class="form-row"><div class="form-group"><label>Fecha de inicio</label><input id="contractStartCalc" type="date" value="${esc(first?.contractStartDate||'')}"></div><div class="form-group"><label>Periodicidad (meses)</label><input id="contractMonths" type="number" min="1" value="4"></div></div><button class="btn" onclick="window.calcNextDate()">Calcular próxima fecha</button><div id="nextDateResult" class="result-space"></div></section></div>
-    <section class="panel"><div class="panel-head"><h3>Valores de índice registrados</h3><span class="muted">La app usa solamente los valores cargados en el sistema; no consulta índices en vivo.</span></div><div class="form-row"><div class="form-group"><label>Índice</label><select id="idxKeyInput">${idxSelectOptions}</select></div><div class="form-group"><label>Fecha</label><input id="idxDateInput" type="date" value="${fmtDateInput()}"></div><div class="form-group"><label>Valor</label><input id="idxValueInput" type="number" min="0" step="0.0001"></div></div><button type="button" class="btn btn-primary" onclick="window.saveIndexValue()">Guardar valor</button><div class="index-history-grid">${rentIndexHistoryHtml()}</div></section>`;
+    <section class="panel"><div class="panel-head"><h3>Alternativa por porcentaje pactado</h3></div><div class="form-row"><div class="form-group"><label>Alquiler base</label><input id="rentPctBase" type="number" min="0" step="0.01" value="${Number(first?.rent)||0}"></div><div class="form-group"><label>Variación acordada (%)</label><input id="rentPct" type="number" step="0.01" value="0"></div></div><button class="btn btn-primary" onclick="window.calculatePct()">Calcular porcentaje</button><div id="pctResult" class="result-space"></div></section>`;
   }
-  window.syncRentalProperty=()=>{const p=state.properties.find(x=>x.id===$('#rentProperty')?.value&&x.accountId===accountId());if(!p)return;$('#rentBase').value=Number(p.rent)||0;$('#rentPctBase').value=Number(p.rent)||0;$('#indexDateStart').value=p.contractStartDate||'';$('#contractStartCalc').value=p.contractStartDate||'';window.syncRentPeriod();};
+  window.syncRentalProperty=()=>{const p=state.properties.find(x=>x.id===$('#rentProperty')?.value&&x.accountId===accountId());if(!p)return;$('#rentBase').value=Number(p.rent)||0;$('#rentPctBase').value=Number(p.rent)||0;$('#indexDateStart').value=p.contractStartDate||'';window.syncRentPeriod();};
   function addContractMonths(iso,months){
     if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)||!Number.isInteger(months)||months<1||months>120)return null;
     const [y,m,d]=iso.split('-').map(Number),original=new Date(Date.UTC(y,m-1,d));
@@ -805,24 +780,16 @@
     window.lookupIndexValues();
   };
   window.calculateIndex=(silent=false)=>{
-    const base=Number($('#rentBase')?.value),s=Number($('#indexStart')?.value),e=Number($('#indexEnd')?.value),box=$('#indexResult');
-    const start=$('#indexDateStart')?.value,end=$('#indexDateEnd')?.value,key=$('#indexType')?.value;
+    const base=Number($('#rentBase')?.value),box=$('#indexResult'),data=rentalOfficialData;
+    const key=$('#indexType')?.value,start=$('#indexDateStart')?.value,end=$('#indexDateEnd')?.value;
     if(!box)return;
-    if(!start||!end||end<=start){box.innerHTML='<div class="notice warning">Las fechas del período son inválidas.</div>';return;}
-    if(!(Number.isFinite(base)&&base>0&&Number.isFinite(s)&&s>0&&Number.isFinite(e)&&e>0)){
-      if(!silent)box.innerHTML='<div class="notice warning">Faltan valores de índice válidos. No se puede obtener un resultado verificable.</div>';return;
-    }
-    const verified=window.rentIndexLookup;
-    const exact=key!=='manual'&&verified&&verified.key===key&&verified.start===start&&verified.end===end&&verified.initial===s&&verified.final===e;
-    const factor=e/s,pct=(factor-1)*100,newRent=Math.round((base*factor+Number.EPSILON)*100)/100,diff=newRent-base;
-    box.innerHTML=`<div class="notice ${exact?'':'warning'}"><strong>${exact?'Valores coincidentes con el registro local':'Cálculo con valores manuales o modificados: NO verificado'}</strong>. ${esc(rentIndexLabel(key))}, período ${esc(start)} a ${esc(end)}. ${exact?'El registro local no certifica la fuente oficial.':'Comprobá los valores y su fuente antes de utilizarlo para cobrar.'}</div><div class="calc-result"><div><span class="muted">Variación</span><div class="big">${pct.toFixed(4)}%</div></div><div><span class="muted">Diferencia</span><div class="big">${money(diff)}</div></div><div><span class="muted">Nuevo alquiler</span><div class="big">${money(newRent)}</div></div><div><span class="muted">Factor</span><div class="big">${factor.toFixed(10)}</div></div></div><p class="muted">${money(base)} × (${e} ÷ ${s}) = ${money(newRent)}. Redondeo monetario al centavo al finalizar el cálculo.</p>`;
-    if(!silent)recordAudit('RENT_INDEX_CALC',`Cálculo ${pct.toFixed(4)}% ${start}–${end}, ${exact?'registro local':'no verificado'}`);
-  };
-  window.calcNextDate=()=>{
-    const start=$('#contractStartCalc')?.value,months=Number($('#contractMonths')?.value),box=$('#nextDateResult');
-    const iso=addContractMonths(start,months);
-    if(!iso){if(box)box.innerHTML='<div class="notice warning">Indicá una fecha válida y una periodicidad entera de 1 a 120 meses.</div>';return;}
-    const [y,m,d]=iso.split('-');if(box)box.innerHTML=`<div class="notice"><strong>Próxima actualización:</strong> ${d}/${m}/${y}</div>`;
+    if(!data||data.index!==key||data.start!==start||data.end!==end){box.innerHTML='<div class="notice warning">Primero consultá los valores oficiales del período.</div>';return;}
+    if(!(Number.isFinite(base)&&base>0)){box.innerHTML='<div class="notice warning">Ingresá un alquiler válido.</div>';return;}
+    const initial=data.initial.value,final=data.final.value;
+    const factor=final/initial,pct=(factor-1)*100,newRent=Math.round((base*factor+Number.EPSILON)*100)/100;
+    const diff=newRent-base;
+    box.innerHTML=`<div class="notice"><strong>Datos oficiales del BCRA</strong> — ${esc(data.description)}. Inicio ${esc(data.initial.date)}: ${initial}; final ${esc(data.final.date)}: ${final}. <a href="${esc(data.source)}" target="_blank" rel="noopener noreferrer">Fuente</a></div><div class="calc-result"><div><span class="muted">Variación</span><div class="big">${pct.toFixed(4)}%</div></div><div><span class="muted">Diferencia</span><div class="big">${money(diff)}</div></div><div><span class="muted">Nuevo alquiler</span><div class="big">${money(newRent)}</div></div><div><span class="muted">Factor</span><div class="big">${factor.toFixed(10)}</div></div></div><p class="muted">${money(base)} × (${final} ÷ ${initial}) = ${money(newRent)}. Redondeo final al centavo. Verificá que el índice y las fechas coincidan con el contrato.</p>`;
+    if(!silent)recordAudit('RENT_INDEX_CALC',`BCRA ${key} ${start}–${end}: ${pct.toFixed(4)}%`);
   };
   window.calculatePct=()=>{const b=Number($('#rentPctBase')?.value),p=Number($('#rentPct')?.value);if(!(Number.isFinite(b)&&b>=0&&Number.isFinite(p))){toast('Datos inválidos.');return;}const n=b*(1+p/100);$('#pctResult').innerHTML=`<div class="calc-result"><div><span class="muted">Variación</span><div class="big">${p.toFixed(2)}%</div></div><div><span class="muted">Nuevo alquiler</span><div class="big">${money(n)}</div></div></div>`;recordAudit('RENT_PCT_CALC',`Cálculo ${p}% sobre ${money(b)}`);};
 

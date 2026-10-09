@@ -24,3 +24,7 @@
 - La fórmula aplica la razón de índices sin redondeos intermedios y redondea el importe final a centavos.
 - El resultado diferencia los valores coincidentes con el registro local de los ingresados manualmente. Ninguno se presenta como certificado por una fuente oficial.
 - **Pendiente para uso productivo**: integración y verificación automatizada de series oficiales y tratamiento específico de Casa Propia, IPC por períodos mensuales y dólar según cláusula contractual. No utilizar esta beta como liquidación definitiva sin verificar las series y el contrato.
+
+
+## Calculadora ARquiler / BCRA
+Interfaz inspirada en ARquiler (atribución visible), con 12 botones de meses y sin «Próximo ajuste». ICL, CER y UVA consultan la API oficial BCRA v4 mediante el servidor. La API descubre la variable por su descripción; si no existe coincidencia única o falta un valor exacto, rechaza el cálculo. IPC, Casa Propia y otros índices **no están habilitados** hasta implementar y verificar sus fuentes oficiales y metodologías propias. Se requiere sesión iniciada. Las llamadas a BCRA necesitan conectividad externa desde Railway.
