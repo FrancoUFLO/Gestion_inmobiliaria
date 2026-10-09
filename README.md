@@ -16,3 +16,11 @@
 - Los archivos PDF/Word de contratos siguen guardándose en IndexedDB del dispositivo. **No se sincronizan entre dispositivos**. No cargar contratos reales hasta implementar almacenamiento privado de adjuntos en servidor.
 - El backend guarda metadatos y estado en JSONB por inmobiliaria; los datos son accesibles desde distintos dispositivos mediante el mismo usuario. Para un despliegue comercial es necesario migrar a tablas normalizadas, permisos por usuario, copias de seguridad verificadas y auditoría inmutable.
 - No usar para información sensible de clientes hasta completar una revisión de seguridad, autorización, pruebas de concurrencia y respaldo.
+
+## Calculadora de alquileres — revisión de precisión
+- Inspirada metodológicamente en la calculadora de Chequeado (https://chequeado.com/calculadoradealquileres/), con atribución y sin afiliación.
+- Selección de periodicidad de 1 a 12 meses; fechas de actualización calculadas sin desbordes de fin de mes.
+- Los índices del registro local solo se usan cuando existen valores para **ambas fechas exactas**; no se interpolan, extrapolan ni inventan valores.
+- La fórmula aplica la razón de índices sin redondeos intermedios y redondea el importe final a centavos.
+- El resultado diferencia los valores coincidentes con el registro local de los ingresados manualmente. Ninguno se presenta como certificado por una fuente oficial.
+- **Pendiente para uso productivo**: integración y verificación automatizada de series oficiales y tratamiento específico de Casa Propia, IPC por períodos mensuales y dólar según cláusula contractual. No utilizar esta beta como liquidación definitiva sin verificar las series y el contrato.

@@ -1,16 +1,1 @@
-{
-  "name": "panel-inmobiliario-v19",
-  "version": "19.0.0",
-  "private": true,
-  "engines": {
-    "node": ">=20"
-  },
-  "scripts": {
-    "start": "node server.js",
-    "check": "node --check server.js && node --check app.js"
-  },
-  "dependencies": {
-    "express": "^4.21.2",
-    "pg": "^8.13.1"
-  }
-}
+{"name":"panel-inmobiliario-v19","version":"19.0.0","private":true,"engines":{"node":">=20"},"scripts":{"start":"node server.js","check":"node --check server.js && node --check app.js"},"dependencies":{"express":"^4.21.2","pg":"^8.13.1","nodemailer":"^6.10.1"}}
